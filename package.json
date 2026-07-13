@@ -1,0 +1,36 @@
+{
+  "name": "pi-system-monitor",
+  "version": "0.1.0",
+  "description": "A compact macOS system monitor and clean alternate screen for Pi.",
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "files": [
+    "README.md",
+    "alternate-screen.ts",
+    "index.ts",
+    "monitor-runtime.ts",
+    "system-stats.ts"
+  ],
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.ts"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
+  }
+}

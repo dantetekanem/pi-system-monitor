@@ -28,7 +28,7 @@ class FakeLifecycle {
 test("enters and leaves the alternate screen exactly once", () => {
   const output = new FakeOutput();
   const lifecycle = new FakeLifecycle();
-  const screen = new AlternateScreenController(output, lifecycle);
+  const screen = new AlternateScreenController(output, lifecycle, {});
 
   assert.equal(screen.enter(), true);
   assert.equal(screen.enter(), false);
@@ -45,11 +45,25 @@ test("enters and leaves the alternate screen exactly once", () => {
   assert.equal(lifecycle.exitListener, null);
 });
 
+test("keeps tmux on its normal buffer while clearing the screen", () => {
+  const output = new FakeOutput();
+  const lifecycle = new FakeLifecycle();
+  const screen = new AlternateScreenController(output, lifecycle, { TMUX: "/private/tmp/tmux/default" });
+
+  assert.equal(screen.enter(), true);
+  assert.doesNotMatch(output.writes[0]!, /\x1b\[\?1049h/);
+  assert.match(output.writes[0]!, /\x1b\[2J\x1b\[H/);
+
+  assert.equal(screen.leave(), true);
+  assert.doesNotMatch(output.writes[1]!, /\x1b\[\?1049l/);
+  assert.match(output.writes[1]!, /\x1b\[\?25h/);
+});
+
 test("does nothing when stdout is not a TTY", () => {
   const output = new FakeOutput();
   output.isTTY = false;
   const lifecycle = new FakeLifecycle();
-  const screen = new AlternateScreenController(output, lifecycle);
+  const screen = new AlternateScreenController(output, lifecycle, {});
 
   assert.equal(screen.enter(), false);
   assert.equal(output.writes.length, 0);
@@ -59,7 +73,7 @@ test("does nothing when stdout is not a TTY", () => {
 test("restores the normal screen during process exit", () => {
   const output = new FakeOutput();
   const lifecycle = new FakeLifecycle();
-  const screen = new AlternateScreenController(output, lifecycle);
+  const screen = new AlternateScreenController(output, lifecycle, {});
 
   screen.enter();
   lifecycle.exitListener?.();
@@ -73,7 +87,7 @@ test("failed terminal writes do not claim screen ownership", () => {
   const output = new FakeOutput();
   output.shouldThrow = true;
   const lifecycle = new FakeLifecycle();
-  const screen = new AlternateScreenController(output, lifecycle);
+  const screen = new AlternateScreenController(output, lifecycle, {});
 
   assert.equal(screen.enter(), false);
   assert.equal(screen.isActive, false);

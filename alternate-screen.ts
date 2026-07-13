@@ -1,5 +1,7 @@
 const ENTER_ALTERNATE_SCREEN = "\x1b[?2026h\x1b[?1049h\x1b[2J\x1b[H\x1b[?2026l";
 const LEAVE_ALTERNATE_SCREEN = "\x1b[?2026h\x1b[?25h\x1b[?1049l\x1b[?2026l";
+const ENTER_TMUX_SCREEN = "\x1b[?2026h\x1b[2J\x1b[H\x1b[?2026l";
+const LEAVE_TMUX_SCREEN = "\x1b[?2026h\x1b[?25h\x1b[?2026l";
 
 interface TerminalOutput {
   readonly isTTY?: boolean;
@@ -11,21 +13,31 @@ interface ProcessLifecycle {
   off(event: "exit", listener: () => void): unknown;
 }
 
+interface TerminalEnvironment {
+  readonly TMUX?: string;
+}
+
 /**
- * Owns Pi's alternate-screen mode for the system-monitor extension.
+ * Owns Pi's screen mode for the system-monitor extension.
  *
- * This intentionally manages only the screen buffer. It does not change mouse,
- * keyboard, scroll-region, raw-mode, or TUI rendering behavior.
+ * tmux cannot retain scrollback from a true alternate buffer, so tmux sessions
+ * receive the same clear screen without the alternate-buffer escape sequence.
  */
 export class AlternateScreenController {
   private active = false;
   private readonly output: TerminalOutput;
   private readonly lifecycle: ProcessLifecycle;
+  private readonly environment: TerminalEnvironment;
   private readonly restoreOnExit = () => this.restoreBestEffort();
 
-  constructor(output: TerminalOutput = process.stdout, lifecycle: ProcessLifecycle = process) {
+  constructor(
+    output: TerminalOutput = process.stdout,
+    lifecycle: ProcessLifecycle = process,
+    environment: TerminalEnvironment = process.env,
+  ) {
     this.output = output;
     this.lifecycle = lifecycle;
+    this.environment = environment;
   }
 
   get isActive(): boolean {
@@ -36,7 +48,7 @@ export class AlternateScreenController {
     if (this.active || !this.output.isTTY) return false;
 
     try {
-      this.output.write(ENTER_ALTERNATE_SCREEN);
+      this.output.write(this.environment.TMUX ? ENTER_TMUX_SCREEN : ENTER_ALTERNATE_SCREEN);
     } catch {
       return false;
     }
@@ -52,7 +64,7 @@ export class AlternateScreenController {
     this.lifecycle.off("exit", this.restoreOnExit);
     this.active = false;
     try {
-      this.output.write(LEAVE_ALTERNATE_SCREEN);
+      this.output.write(this.environment.TMUX ? LEAVE_TMUX_SCREEN : LEAVE_ALTERNATE_SCREEN);
     } catch {
       // The terminal may already be unavailable during shutdown.
     }
@@ -64,7 +76,7 @@ export class AlternateScreenController {
 
     this.active = false;
     try {
-      this.output.write(LEAVE_ALTERNATE_SCREEN);
+      this.output.write(this.environment.TMUX ? LEAVE_TMUX_SCREEN : LEAVE_ALTERNATE_SCREEN);
     } catch {
       // Process-exit cleanup must never prevent shutdown.
     }

@@ -10,30 +10,12 @@ const STATS: SystemStats = {
   tempC: null,
 };
 
-function createScreen() {
-  return {
-    isActive: false,
-    enterCalls: 0,
-    leaveCalls: 0,
-    enter() {
-      this.enterCalls += 1;
-      this.isActive = true;
-      return true;
-    },
-    leave() {
-      this.leaveCalls += 1;
-      const wasActive = this.isActive;
-      this.isActive = false;
-      return wasActive;
-    },
-  };
-}
-
 function createContext(mode: string) {
   const state = {
-    footerCleared: false,
-    forceRenders: [] as Array<boolean | undefined>,
-    statuses: [] as string[],
+    footerFactories: 0,
+    footerClears: 0,
+    statuses: [] as Array<{ key: string; value: string | undefined }>,
+    renderFooter: null as ((width: number) => string[]) | null,
   };
 
   const context = {
@@ -43,18 +25,26 @@ function createContext(mode: string) {
       theme: {},
       setFooter(factory: unknown) {
         if (factory === undefined) {
-          state.footerCleared = true;
+          state.footerClears += 1;
+          state.renderFooter = null;
           return;
         }
 
-        (factory as Function)(
-          { requestRender: (force?: boolean) => state.forceRenders.push(force) },
+        state.footerFactories += 1;
+        const component = (factory as Function)(
           {},
-          { getExtensionStatuses: () => new Map([["system-monitor", "CPU 20%"]]) },
+          {},
+          {
+            getExtensionStatuses: () => new Map([
+              ["system-monitor", "CPU 20%"],
+              ["other-extension", "git:main"],
+            ]),
+          },
         );
+        state.renderFooter = component.render;
       },
-      setStatus(_key: string, value: string) {
-        state.statuses.push(value);
+      setStatus(key: string, value: string | undefined) {
+        state.statuses.push({ key, value });
       },
     },
   };
@@ -62,53 +52,90 @@ function createContext(mode: string) {
   return { context, state };
 }
 
-function createRuntime(screen: ReturnType<typeof createScreen>, clearCalls: unknown[]) {
-  return new SystemMonitorRuntime({
-    screen,
+function createRuntime() {
+  const timerState = {
+    intervals: [] as number[],
+    cleared: [] as unknown[],
+  };
+
+  const runtime = new SystemMonitorRuntime({
     getStats: async () => STATS,
     formatStatus: (stats) => `CPU ${stats.cpuPercent}%`,
-    truncate: (text) => text,
-    setInterval: (() => ({ id: 1 })) as any,
-    clearInterval: (interval) => clearCalls.push(interval),
+    truncate: (text, width) => text.slice(0, width),
+    setInterval: ((_: () => void, milliseconds: number) => {
+      timerState.intervals.push(milliseconds);
+      return { id: timerState.intervals.length };
+    }) as any,
+    clearInterval: (interval) => timerState.cleared.push(interval),
   });
+
+  return { runtime, timerState };
 }
 
-test("TUI startup enters alternate screen, forces redraw, publishes status, and cleans up", async () => {
-  const screen = createScreen();
-  const clearCalls: unknown[] = [];
-  const runtime = createRuntime(screen, clearCalls);
+test("TUI startup installs one aggregating footer, refreshes every five seconds, and cleans up idempotently", async () => {
+  const { runtime, timerState } = createRuntime();
   const { context, state } = createContext("tui");
 
   runtime.start(context);
   await new Promise<void>((resolve) => setImmediate(resolve));
 
-  assert.equal(screen.enterCalls, 1);
-  assert.deepEqual(state.forceRenders, [true]);
-  assert.deepEqual(state.statuses, ["CPU 20%"]);
+  assert.equal(state.footerFactories, 1);
+  assert.deepEqual(state.renderFooter?.(80), ["CPU 20% │ git:main", ""]);
+  assert.deepEqual(state.statuses, [{ key: "system-monitor", value: "CPU 20%" }]);
+  assert.deepEqual(timerState.intervals, [5000]);
 
   runtime.stop();
-  assert.equal(screen.leaveCalls, 1);
-  assert.equal(clearCalls.length, 1);
-  assert.equal(state.footerCleared, true);
+  assert.equal(timerState.cleared.length, 1);
+  assert.equal(state.footerClears, 1);
+  assert.deepEqual(state.statuses.at(-1), { key: "system-monitor", value: undefined });
+
+  runtime.stop();
+  assert.equal(timerState.cleared.length, 1);
+  assert.equal(state.footerClears, 1);
+  assert.equal(state.statuses.length, 2);
 });
 
-test("non-TUI startup never enters alternate screen", () => {
-  const screen = createScreen();
-  const runtime = createRuntime(screen, []);
-  const { context } = createContext("print");
+test("non-TUI startup publishes metrics without installing or clearing a custom footer", async () => {
+  const { runtime } = createRuntime();
+  const { context, state } = createContext("print");
 
   runtime.start(context);
-  assert.equal(screen.enterCalls, 0);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(state.footerFactories, 0);
+  assert.deepEqual(state.statuses, [{ key: "system-monitor", value: "CPU 20%" }]);
+
+  runtime.stop();
+  assert.equal(state.footerClears, 0);
+  assert.deepEqual(state.statuses.at(-1), { key: "system-monitor", value: undefined });
+});
+
+test("restarting transfers singleton footer ownership and clears the prior lifecycle", async () => {
+  const { runtime, timerState } = createRuntime();
+  const first = createContext("tui");
+  const second = createContext("tui");
+
+  runtime.start(first.context);
+  runtime.start(second.context);
+
+  assert.equal(first.state.footerFactories, 1);
+  assert.equal(first.state.footerClears, 1);
+  assert.deepEqual(first.state.statuses.at(-1), { key: "system-monitor", value: undefined });
+  assert.equal(second.state.footerFactories, 1);
+  assert.equal(timerState.cleared.length, 1);
+  assert.deepEqual(timerState.intervals, [5000, 5000]);
+
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(second.state.statuses, [{ key: "system-monitor", value: "CPU 20%" }]);
+
   runtime.stop();
 });
 
 test("a refresh that finishes after shutdown does not update stale UI", async () => {
-  const screen = createScreen();
   let resolveStats!: (stats: SystemStats) => void;
   const statsPromise = new Promise<SystemStats>((resolve) => { resolveStats = resolve; });
   const { context, state } = createContext("tui");
   const runtime = new SystemMonitorRuntime({
-    screen,
     getStats: () => statsPromise,
     formatStatus: () => "late",
     truncate: (text) => text,
@@ -121,5 +148,5 @@ test("a refresh that finishes after shutdown does not update stale UI", async ()
   resolveStats(STATS);
   await new Promise<void>((resolve) => setImmediate(resolve));
 
-  assert.deepEqual(state.statuses, []);
+  assert.deepEqual(state.statuses, [{ key: "system-monitor", value: undefined }]);
 });

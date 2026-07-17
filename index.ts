@@ -2,12 +2,11 @@
  * Compact macOS system monitor for Pi.
  *
  * Shows CPU, memory, free disk space, and optional temperature metrics in a
- * compact footer. Interactive TUI sessions use a clean alternate screen.
+ * compact footer alongside statuses from other extensions.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import { AlternateScreenController } from "./alternate-screen.ts";
 import { SystemMonitorRuntime } from "./monitor-runtime.ts";
 import { getSystemStats, type SystemStats } from "./system-stats.ts";
 
@@ -55,7 +54,6 @@ export function buildStatusText(stats: SystemStats, contextTokens?: number, them
 
 export default function systemMonitorExtension(pi: ExtensionAPI): void {
   const runtime = new SystemMonitorRuntime({
-    screen: new AlternateScreenController(),
     getStats: getSystemStats,
     formatStatus: buildStatusText,
     truncate: truncateToWidth,

@@ -1,14 +1,13 @@
 {
   "name": "pi-system-monitor",
-  "version": "0.1.0",
-  "description": "A compact macOS system monitor and clean alternate screen for Pi.",
+  "version": "0.1.1",
+  "description": "A compact macOS system monitor footer for Pi.",
   "type": "module",
   "keywords": [
     "pi-package"
   ],
   "files": [
     "README.md",
-    "alternate-screen.ts",
     "index.ts",
     "monitor-runtime.ts",
     "system-stats.ts"

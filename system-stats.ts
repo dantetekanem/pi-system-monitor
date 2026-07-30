@@ -1,69 +1,36 @@
-import { execFile } from "node:child_process";
+import {
+  runCommand,
+  type TemperatureCommandRunner,
+} from "./temperature-monitor.ts";
 
 export interface SystemStats {
   cpuPercent: string;
   memPercent: string;
   diskFreeGB: string;
-  tempC: string | null;
 }
 
-export type CommandRunner = (
-  command: string,
-  args: readonly string[],
-  timeoutMs?: number,
-) => Promise<string>;
-
-const TEMPERATURE_COMMANDS: ReadonlyArray<readonly [string, readonly string[]]> = [
-  ["/opt/homebrew/bin/macmon", ["pipe", "--samples", "1", "--interval", "100"]],
-  ["/usr/local/bin/macmon", ["pipe", "--samples", "1", "--interval", "100"]],
-  ["macmon", ["pipe", "--samples", "1", "--interval", "100"]],
-  ["/opt/homebrew/bin/osx-cpu-temp", []],
-  ["/usr/local/bin/osx-cpu-temp", []],
-  ["osx-cpu-temp", []],
-];
-
-export const runCommand: CommandRunner = (command, args, timeoutMs = 5000) =>
-  new Promise((resolve) => {
-    execFile(command, [...args], { timeout: timeoutMs }, (error, stdout) => {
-      resolve(error ? "" : stdout);
-    });
-  });
-
-export function parseTemperatureText(text: string): string | null {
-  const tempText = text.trim();
-  if (!tempText) return null;
-
-  if (tempText.startsWith("{")) {
-    try {
-      const parsed = JSON.parse(tempText) as { temp?: { cpu_temp_avg?: number; gpu_temp_avg?: number } };
-      const temp = parsed.temp?.cpu_temp_avg ?? parsed.temp?.gpu_temp_avg;
-      if (Number.isFinite(temp) && temp! > 0) return temp!.toFixed(0);
-    } catch {
-      return null;
-    }
-  }
-
-  const match = tempText.match(/([\d.]+)/);
-  if (!match) return null;
-
-  const temp = Number.parseFloat(match[1]!);
-  return Number.isFinite(temp) && temp > 0 ? temp.toFixed(0) : null;
+export interface SystemMetrics extends SystemStats {
+  tempC: number | null;
 }
 
-export async function readOptionalTemperature(run: CommandRunner = runCommand): Promise<string | null> {
-  for (const [command, args] of TEMPERATURE_COMMANDS) {
-    let output = "";
-    try {
-      output = await run(command, args, 3000);
-    } catch {
-      // Optional collectors must never make Pi fail.
-    }
+export type CommandRunner = TemperatureCommandRunner;
 
-    const temperature = parseTemperatureText(output);
-    if (temperature) return temperature;
-  }
+interface StatusTheme {
+  fg(color: "success" | "warning" | "error", text: string): string;
+}
 
-  return null;
+function isStatusTheme(theme: unknown): theme is StatusTheme {
+  return typeof theme === "object"
+    && theme !== null
+    && typeof (theme as { fg?: unknown }).fg === "function";
+}
+
+function colorMetric(
+  theme: unknown,
+  severity: "success" | "warning" | "error",
+  text: string,
+): string {
+  return isStatusTheme(theme) ? theme.fg(severity, text) : text;
 }
 
 function parseCpuPercent(topOutput: string): string {
@@ -73,18 +40,17 @@ function parseCpuPercent(topOutput: string): string {
 }
 
 function parseMemoryPercent(vmOutput: string): string {
-  const pageSize = 4096;
-  const getPage = (key: string) => {
+  const getPages = (key: string) => {
     const match = vmOutput.match(new RegExp(`${key}:\\s+(\\d+)`));
-    return match ? Number.parseInt(match[1]!, 10) * pageSize : 0;
+    return match ? Number.parseInt(match[1]!, 10) : 0;
   };
 
-  const active = getPage("Pages active");
-  const wired = getPage("Pages wired down");
-  const compressed = getPage("Pages occupied by compressor");
-  const free = getPage("Pages free");
-  const inactive = getPage("Pages inactive");
-  const speculative = getPage("Pages speculative");
+  const active = getPages("Pages active");
+  const wired = getPages("Pages wired down");
+  const compressed = getPages("Pages occupied by compressor");
+  const free = getPages("Pages free");
+  const inactive = getPages("Pages inactive");
+  const speculative = getPages("Pages speculative");
   const total = active + wired + compressed + free + inactive + speculative;
 
   if (total === 0) return "?";
@@ -95,11 +61,8 @@ function parseDiskFreeGB(dfOutput: string): string {
   const lines = dfOutput.trim().split("\n");
   if (lines.length < 2) return "?";
 
-  const columns = lines[1]!.trim().split(/\s+/);
-  const available = columns[3];
-  if (!available) return "?";
-
-  const match = available.match(/([\d.]+)([KMGT]?)i?/);
+  const available = lines[1]!.trim().split(/\s+/)[3];
+  const match = available?.match(/([\d.]+)([KMGT]?)i?/);
   if (!match) return "?";
 
   let value = Number.parseFloat(match[1]!);
@@ -107,22 +70,68 @@ function parseDiskFreeGB(dfOutput: string): string {
   if (unit === "T") value *= 1024;
   else if (unit === "M") value /= 1024;
   else if (unit === "K") value /= 1024 * 1024;
-
   return value.toFixed(0);
 }
 
+function formatDiskFree(diskFreeGB: string): string {
+  const gigabytes = Number.parseFloat(diskFreeGB);
+  if (!Number.isFinite(gigabytes)) return `${diskFreeGB}GB`;
+  return gigabytes >= 1000
+    ? `${(gigabytes / 1000).toFixed(2)}TB`
+    : `${gigabytes.toFixed(0)}GB`;
+}
+
 export async function getSystemStats(run: CommandRunner = runCommand): Promise<SystemStats> {
-  const [topOutput, vmOutput, dfOutput, tempC] = await Promise.all([
-    run("/usr/bin/top", ["-l", "1", "-n", "0"]),
-    run("/usr/bin/vm_stat", []),
-    run("/bin/df", ["-h", "/System/Volumes/Data"]),
-    readOptionalTemperature(run),
+  const safeRun = async (command: string, args: readonly string[]): Promise<string> => {
+    try {
+      return await run(command, args, 2000);
+    } catch {
+      return "";
+    }
+  };
+
+  const [topOutput, vmOutput, dfOutput] = await Promise.all([
+    safeRun("/usr/bin/top", ["-l", "1", "-n", "0"]),
+    safeRun("/usr/bin/vm_stat", []),
+    safeRun("/bin/df", ["-h", "/System/Volumes/Data"]),
   ]);
 
   return {
     cpuPercent: parseCpuPercent(topOutput),
     memPercent: parseMemoryPercent(vmOutput),
     diskFreeGB: parseDiskFreeGB(dfOutput),
-    tempC,
   };
+}
+
+export function formatSystemStatus(metrics: SystemMetrics, theme?: unknown): string {
+  const cpu = Number.parseInt(metrics.cpuPercent, 10) || 0;
+  const memory = Number.parseInt(metrics.memPercent, 10) || 0;
+  const disk = Number.parseInt(metrics.diskFreeGB, 10) || 0;
+  const parts = [
+    colorMetric(
+      theme,
+      cpu > 80 ? "error" : cpu > 50 ? "warning" : "success",
+      `${cpu > 80 ? "!! " : cpu > 50 ? "! " : ""}CPU ${metrics.cpuPercent}%`,
+    ),
+    colorMetric(
+      theme,
+      memory > 85 ? "error" : memory > 70 ? "warning" : "success",
+      `${memory > 85 ? "!! " : memory > 70 ? "! " : ""}MEM ${metrics.memPercent}%`,
+    ),
+    colorMetric(
+      theme,
+      disk < 20 ? "error" : disk < 50 ? "warning" : "success",
+      `${disk < 20 ? "!! " : disk < 50 ? "! " : ""}DSK ${formatDiskFree(metrics.diskFreeGB)}`,
+    ),
+  ];
+
+  if (metrics.tempC !== null) {
+    parts.push(colorMetric(
+      theme,
+      metrics.tempC > 85 ? "error" : metrics.tempC > 70 ? "warning" : "success",
+      `${metrics.tempC > 85 ? "!! " : metrics.tempC > 70 ? "! " : ""}${metrics.tempC}°C`,
+    ));
+  }
+
+  return parts.join(" │ ");
 }

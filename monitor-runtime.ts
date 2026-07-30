@@ -1,8 +1,9 @@
-import type { SystemStats } from "./system-stats.ts";
+import type { SystemMetrics } from "./system-stats.ts";
+
+const REFRESH_COOLDOWN_MS = 30_000;
 
 interface MonitorContext {
   mode: string;
-  getContextUsage?: () => { tokens: number } | undefined;
   ui: {
     theme: unknown;
     setFooter(factory: unknown): void;
@@ -11,17 +12,16 @@ interface MonitorContext {
 }
 
 interface RuntimeDependencies {
-  getStats: () => Promise<SystemStats>;
-  formatStatus: (stats: SystemStats, contextTokens?: number, theme?: unknown) => string;
+  readMetrics: () => Promise<SystemMetrics>;
+  formatStatus: (metrics: SystemMetrics, theme?: unknown) => string;
   truncate: (text: string, width: number) => string;
-  setInterval: (callback: () => void, milliseconds: number) => ReturnType<typeof setInterval>;
-  clearInterval: (interval: ReturnType<typeof setInterval>) => void;
+  now: () => number;
 }
 
 export class SystemMonitorRuntime {
-  private intervalId: ReturnType<typeof setInterval> | null = null;
   private refreshGeneration: number | null = null;
   private lifecycleGeneration = 0;
+  private lastRefreshStartedAt = Number.NEGATIVE_INFINITY;
   private currentContext: MonitorContext | null = null;
   private readonly dependencies: RuntimeDependencies;
 
@@ -31,53 +31,61 @@ export class SystemMonitorRuntime {
 
   start(context: MonitorContext): void {
     this.stop();
+    if (context.mode !== "tui") return;
+
     this.currentContext = context;
+    this.lastRefreshStartedAt = Number.NEGATIVE_INFINITY;
+
+    context.ui.setFooter((_tui: unknown, _theme: unknown, footerData: {
+      getExtensionStatuses(): ReadonlyMap<string, string>;
+    }) => ({
+      invalidate() {},
+      render: (width: number): string[] => {
+        const statuses = [...footerData.getExtensionStatuses().values()].filter(Boolean);
+        if (statuses.length === 0) return [];
+        return [this.dependencies.truncate(statuses.join(" │ "), width), ""];
+      },
+    }));
+
+    this.refresh();
+  }
+
+  refresh(): void {
+    const context = this.currentContext;
+    if (!context) return;
+
     const generation = this.lifecycleGeneration;
+    if (this.refreshGeneration === generation) return;
 
-    if (context.mode === "tui") {
-      context.ui.setFooter((_tui: unknown, _theme: unknown, footerData: {
-        getExtensionStatuses(): ReadonlyMap<string, string>;
-      }) => ({
-        invalidate() {},
-        render: (width: number): string[] => {
-          const statuses = [...footerData.getExtensionStatuses().values()].filter(Boolean);
-          if (statuses.length === 0) return [];
-          return [this.dependencies.truncate(statuses.join(" │ "), width), ""];
-        },
-      }));
-    }
+    const now = this.dependencies.now();
+    if (now - this.lastRefreshStartedAt < REFRESH_COOLDOWN_MS) return;
 
-    void this.refreshStats(generation);
-    this.intervalId = this.dependencies.setInterval(() => void this.refreshStats(generation), 5000);
+    this.lastRefreshStartedAt = now;
+    this.refreshGeneration = generation;
+    void this.readAndPublish(context, generation);
   }
 
   stop(): void {
     this.lifecycleGeneration += 1;
-
-    if (this.intervalId) {
-      this.dependencies.clearInterval(this.intervalId);
-      this.intervalId = null;
-    }
+    this.lastRefreshStartedAt = Number.NEGATIVE_INFINITY;
 
     const context = this.currentContext;
     this.currentContext = null;
     if (!context) return;
 
     context.ui.setStatus("system-monitor", undefined);
-    if (context.mode === "tui") context.ui.setFooter(undefined);
+    context.ui.setFooter(undefined);
   }
 
-  private async refreshStats(generation: number): Promise<void> {
-    if (this.refreshGeneration === generation) return;
-    this.refreshGeneration = generation;
-
+  private async readAndPublish(context: MonitorContext, generation: number): Promise<void> {
     try {
-      const stats = await this.dependencies.getStats();
-      const context = this.currentContext;
-      if (!context || generation !== this.lifecycleGeneration) return;
-
-      const tokens = context.getContextUsage?.()?.tokens;
-      context.ui.setStatus("system-monitor", this.dependencies.formatStatus(stats, tokens, context.ui.theme));
+      const metrics = await this.dependencies.readMetrics();
+      if (context === this.currentContext && generation === this.lifecycleGeneration) {
+        context.ui.setStatus(
+          "system-monitor",
+          this.dependencies.formatStatus(metrics, context.ui.theme),
+        );
+      }
     } catch {
       // Monitoring must never interrupt Pi.
     } finally {

@@ -1,7 +1,7 @@
 {
   "name": "pi-system-monitor",
-  "version": "0.1.1",
-  "description": "A compact macOS system monitor footer for Pi.",
+  "version": "0.1.2",
+  "description": "A lightweight macOS system metrics footer for Pi.",
   "type": "module",
   "keywords": [
     "pi-package"
@@ -10,7 +10,8 @@
     "README.md",
     "index.ts",
     "monitor-runtime.ts",
-    "system-stats.ts"
+    "system-stats.ts",
+    "temperature-monitor.ts"
   ],
   "scripts": {
     "test": "node --experimental-strip-types --test tests/*.test.ts"

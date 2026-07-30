@@ -1,13 +1,9 @@
 # pi-system-monitor
 
-A small macOS Pi extension that shows CPU, memory, free disk space, and optional temperature in a compact footer. The footer includes statuses published by other extensions and refreshes system metrics every five seconds.
+Shows CPU, memory, free disk space, and CPU temperature in Pi's shared footer.
 
-Temperature is shown when `macmon` or `osx-cpu-temp` is already available. If neither is installed, the other metrics continue normally.
+Requires [`iSMC`](https://github.com/dkorunic/iSMC) on `PATH`.
 
-## Install
+Install: `pi install https://github.com/dantetekanem/pi-system-monitor.git`
 
-```bash
-pi install https://github.com/dantetekanem/pi-system-monitor.git
-```
-
-Restart Pi after installation.
+Run `/reload` after installing or updating.

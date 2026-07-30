@@ -1,14 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { SystemMonitorRuntime } from "../monitor-runtime.ts";
-import type { SystemStats } from "../system-stats.ts";
+import type { SystemMetrics } from "../system-stats.ts";
 
-const STATS: SystemStats = {
-  cpuPercent: "20",
-  memPercent: "40",
-  diskFreeGB: "100",
-  tempC: null,
-};
+function flush(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
 
 function createContext(mode: string) {
   const state = {
@@ -20,7 +17,6 @@ function createContext(mode: string) {
 
   const context = {
     mode,
-    getContextUsage: () => ({ tokens: 1234 }),
     ui: {
       theme: {},
       setFooter(factory: unknown) {
@@ -36,7 +32,7 @@ function createContext(mode: string) {
           {},
           {
             getExtensionStatuses: () => new Map([
-              ["system-monitor", "CPU 20%"],
+              ["system-monitor", "CPU 20% │ MEM 40% │ DSK 1.43TB │ 42°C"],
               ["other-extension", "git:main"],
             ]),
           },
@@ -52,101 +48,140 @@ function createContext(mode: string) {
   return { context, state };
 }
 
+const initialMetrics: SystemMetrics = {
+  cpuPercent: "20",
+  memPercent: "40",
+  diskFreeGB: "1434",
+  tempC: 42,
+};
+
+function formatStatus(metrics: SystemMetrics): string {
+  return `CPU ${metrics.cpuPercent}% │ MEM ${metrics.memPercent}% │ DSK 1.43TB │ ${metrics.tempC}°C`;
+}
+
 function createRuntime() {
-  const timerState = {
-    intervals: [] as number[],
-    cleared: [] as unknown[],
+  const monitorState = {
+    now: 0,
+    reads: 0,
+    metrics: initialMetrics,
   };
 
   const runtime = new SystemMonitorRuntime({
-    getStats: async () => STATS,
-    formatStatus: (stats) => `CPU ${stats.cpuPercent}%`,
+    readMetrics: async () => {
+      monitorState.reads += 1;
+      return monitorState.metrics;
+    },
+    formatStatus,
     truncate: (text, width) => text.slice(0, width),
-    setInterval: ((_: () => void, milliseconds: number) => {
-      timerState.intervals.push(milliseconds);
-      return { id: timerState.intervals.length };
-    }) as any,
-    clearInterval: (interval) => timerState.cleared.push(interval),
+    now: () => monitorState.now,
   });
 
-  return { runtime, timerState };
+  return { runtime, monitorState };
 }
 
-test("TUI startup installs one aggregating footer, refreshes every five seconds, and cleans up idempotently", async () => {
-  const { runtime, timerState } = createRuntime();
+test("TUI startup reads once, refreshes only after cooldown, and cleans up idempotently", async () => {
+  const { runtime, monitorState } = createRuntime();
   const { context, state } = createContext("tui");
 
   runtime.start(context);
-  await new Promise<void>((resolve) => setImmediate(resolve));
+  await flush();
 
   assert.equal(state.footerFactories, 1);
-  assert.deepEqual(state.renderFooter?.(80), ["CPU 20% │ git:main", ""]);
-  assert.deepEqual(state.statuses, [{ key: "system-monitor", value: "CPU 20%" }]);
-  assert.deepEqual(timerState.intervals, [5000]);
+  assert.deepEqual(state.renderFooter?.(100), [
+    "CPU 20% │ MEM 40% │ DSK 1.43TB │ 42°C │ git:main",
+    "",
+  ]);
+  assert.equal(monitorState.reads, 1);
+  assert.deepEqual(state.statuses, [{
+    key: "system-monitor",
+    value: "CPU 20% │ MEM 40% │ DSK 1.43TB │ 42°C",
+  }]);
+
+  monitorState.now = 29_999;
+  runtime.refresh();
+  await flush();
+  assert.equal(monitorState.reads, 1);
+
+  monitorState.now = 30_000;
+  monitorState.metrics = { ...initialMetrics, tempC: 43 };
+  runtime.refresh();
+  await flush();
+  assert.equal(monitorState.reads, 2);
+  assert.deepEqual(state.statuses.at(-1), {
+    key: "system-monitor",
+    value: "CPU 20% │ MEM 40% │ DSK 1.43TB │ 43°C",
+  });
 
   runtime.stop();
-  assert.equal(timerState.cleared.length, 1);
   assert.equal(state.footerClears, 1);
   assert.deepEqual(state.statuses.at(-1), { key: "system-monitor", value: undefined });
 
   runtime.stop();
-  assert.equal(timerState.cleared.length, 1);
   assert.equal(state.footerClears, 1);
-  assert.equal(state.statuses.length, 2);
+  assert.equal(state.statuses.length, 3);
 });
 
-test("non-TUI startup publishes metrics without installing or clearing a custom footer", async () => {
-  const { runtime } = createRuntime();
+test("non-TUI startup never reads metrics or touches the footer", async () => {
+  const { runtime, monitorState } = createRuntime();
   const { context, state } = createContext("print");
 
   runtime.start(context);
-  await new Promise<void>((resolve) => setImmediate(resolve));
-
-  assert.equal(state.footerFactories, 0);
-  assert.deepEqual(state.statuses, [{ key: "system-monitor", value: "CPU 20%" }]);
-
+  runtime.refresh();
+  await flush();
   runtime.stop();
+
+  assert.equal(monitorState.reads, 0);
+  assert.equal(state.footerFactories, 0);
   assert.equal(state.footerClears, 0);
-  assert.deepEqual(state.statuses.at(-1), { key: "system-monitor", value: undefined });
+  assert.deepEqual(state.statuses, []);
 });
 
-test("restarting transfers singleton footer ownership and clears the prior lifecycle", async () => {
-  const { runtime, timerState } = createRuntime();
+test("restarting ignores metrics from the previous lifecycle", async () => {
+  const resolvers: Array<(metrics: SystemMetrics) => void> = [];
+  const runtime = new SystemMonitorRuntime({
+    readMetrics: () => new Promise((resolve) => resolvers.push(resolve)),
+    formatStatus,
+    truncate: (text) => text,
+    now: () => 0,
+  });
   const first = createContext("tui");
   const second = createContext("tui");
 
   runtime.start(first.context);
   runtime.start(second.context);
+  assert.equal(resolvers.length, 2);
 
-  assert.equal(first.state.footerFactories, 1);
-  assert.equal(first.state.footerClears, 1);
-  assert.deepEqual(first.state.statuses.at(-1), { key: "system-monitor", value: undefined });
-  assert.equal(second.state.footerFactories, 1);
-  assert.equal(timerState.cleared.length, 1);
-  assert.deepEqual(timerState.intervals, [5000, 5000]);
+  resolvers[0]!(initialMetrics);
+  await flush();
+  assert.deepEqual(second.state.statuses, []);
 
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.deepEqual(second.state.statuses, [{ key: "system-monitor", value: "CPU 20%" }]);
+  resolvers[1]!(initialMetrics);
+  await flush();
+  assert.deepEqual(second.state.statuses, [{
+    key: "system-monitor",
+    value: "CPU 20% │ MEM 40% │ DSK 1.43TB │ 42°C",
+  }]);
 
   runtime.stop();
 });
 
-test("a refresh that finishes after shutdown does not update stale UI", async () => {
-  let resolveStats!: (stats: SystemStats) => void;
-  const statsPromise = new Promise<SystemStats>((resolve) => { resolveStats = resolve; });
+test("metrics received after shutdown do not update stale UI", async () => {
+  let resolveMetrics!: (metrics: SystemMetrics) => void;
+  const pending = new Promise<SystemMetrics>((resolve) => {
+    resolveMetrics = resolve;
+  });
   const { context, state } = createContext("tui");
   const runtime = new SystemMonitorRuntime({
-    getStats: () => statsPromise,
-    formatStatus: () => "late",
+    readMetrics: () => pending,
+    formatStatus,
     truncate: (text) => text,
-    setInterval: (() => ({ id: 1 })) as any,
-    clearInterval: () => {},
+    now: () => 0,
   });
 
   runtime.start(context);
   runtime.stop();
-  resolveStats(STATS);
-  await new Promise<void>((resolve) => setImmediate(resolve));
+  resolveMetrics(initialMetrics);
+  await flush();
 
   assert.deepEqual(state.statuses, [{ key: "system-monitor", value: undefined }]);
 });

@@ -1,35 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  formatSystemStatus,
   getSystemStats,
-  parseTemperatureText,
-  readOptionalTemperature,
   type CommandRunner,
 } from "../system-stats.ts";
 
-test("parses macmon JSON and osx-cpu-temp text", () => {
-  assert.equal(parseTemperatureText('{"temp":{"cpu_temp_avg":54.6}}'), "55");
-  assert.equal(parseTemperatureText("61.2°C"), "61");
-  assert.equal(parseTemperatureText("not a temperature"), null);
-});
-
-test("missing temperature commands are optional and non-fatal", async () => {
-  const missingRunner: CommandRunner = async () => {
-    throw new Error("ENOENT");
-  };
-
-  assert.equal(await readOptionalTemperature(missingRunner), null);
-});
-
-test("falls back to another optional temperature collector", async () => {
-  const runner: CommandRunner = async (command) =>
-    command.includes("osx-cpu-temp") ? "48.7°C" : "";
-
-  assert.equal(await readOptionalTemperature(runner), "49");
-});
-
-test("collects and parses macOS stats with no temperature collector", async () => {
-  const runner: CommandRunner = async (command) => {
+test("collects CPU, memory, and disk stats without a temperature subprocess", async () => {
+  const calls: Array<{ command: string; args: readonly string[]; timeoutMs?: number }> = [];
+  const runner: CommandRunner = async (command, args, timeoutMs) => {
+    calls.push({ command, args, timeoutMs });
     if (command === "/usr/bin/top") return "CPU usage: 12.5% user, 7.5% sys, 80.0% idle";
     if (command === "/usr/bin/vm_stat") {
       return [
@@ -51,6 +31,33 @@ test("collects and parses macOS stats with no temperature collector", async () =
     cpuPercent: "20",
     memPercent: "40",
     diskFreeGB: "1434",
-    tempC: null,
   });
+  assert.deepEqual(calls, [
+    { command: "/usr/bin/top", args: ["-l", "1", "-n", "0"], timeoutMs: 2000 },
+    { command: "/usr/bin/vm_stat", args: [], timeoutMs: 2000 },
+    { command: "/bin/df", args: ["-h", "/System/Volumes/Data"], timeoutMs: 2000 },
+  ]);
+});
+
+test("formats CPU, memory, disk, and temperature together", () => {
+  const theme = {
+    fg(color: string, text: string) {
+      return `<${color}>${text}</${color}>`;
+    },
+  };
+
+  assert.equal(
+    formatSystemStatus({
+      cpuPercent: "20",
+      memPercent: "40",
+      diskFreeGB: "1434",
+      tempC: 42,
+    }, theme),
+    [
+      "<success>CPU 20%</success>",
+      "<success>MEM 40%</success>",
+      "<success>DSK 1.43TB</success>",
+      "<success>42°C</success>",
+    ].join(" │ "),
+  );
 });

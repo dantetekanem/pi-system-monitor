@@ -1,3 +1,5 @@
+import { cpus } from "node:os";
+import { setTimeout as sleep } from "node:timers/promises";
 import {
   runCommand,
   type TemperatureCommandRunner,
@@ -14,6 +16,26 @@ export interface SystemMetrics extends SystemStats {
 }
 
 export type CommandRunner = TemperatureCommandRunner;
+
+export interface CpuTimes {
+  user: number;
+  nice: number;
+  sys: number;
+  idle: number;
+  irq: number;
+}
+
+export type CpuTimesReader = () => ReadonlyArray<{ readonly times: CpuTimes }>;
+export type CpuSampleDelay = (milliseconds: number) => Promise<unknown>;
+export type CpuPercentReader = () => Promise<string>;
+
+const CPU_SAMPLE_WINDOW_MS = 200;
+
+interface CpuSnapshot {
+  busy: number;
+  total: number;
+  cores: number;
+}
 
 interface StatusTheme {
   fg(color: "success" | "warning" | "error", text: string): string;
@@ -33,10 +55,54 @@ function colorMetric(
   return isStatusTheme(theme) ? theme.fg(severity, text) : text;
 }
 
-function parseCpuPercent(topOutput: string): string {
-  const match = topOutput.match(/CPU usage:\s+([\d.]+)%\s+user,\s+([\d.]+)%\s+sys/);
-  if (!match) return "?";
-  return (Number.parseFloat(match[1]!) + Number.parseFloat(match[2]!)).toFixed(0);
+function cpuSnapshot(readCpuTimes: CpuTimesReader): CpuSnapshot | null {
+  let samples: ReturnType<CpuTimesReader>;
+  try {
+    samples = readCpuTimes();
+  } catch {
+    return null;
+  }
+  if (samples.length === 0) return null;
+
+  let busy = 0;
+  let total = 0;
+  for (const sample of samples) {
+    const times = sample?.times;
+    if (!times) return null;
+
+    const values = [times.user, times.nice, times.sys, times.idle, times.irq];
+    if (values.some((value) => !Number.isFinite(value) || value < 0)) return null;
+
+    const sampleBusy = times.user + times.nice + times.sys + times.irq;
+    busy += sampleBusy;
+    total += sampleBusy + times.idle;
+  }
+
+  return total > 0 ? { busy, total, cores: samples.length } : null;
+}
+
+export async function readCpuPercent(
+  readCpuTimes: CpuTimesReader = cpus,
+  delay: CpuSampleDelay = sleep,
+  windowMs = CPU_SAMPLE_WINDOW_MS,
+): Promise<string> {
+  const first = cpuSnapshot(readCpuTimes);
+  if (!first) return "?";
+
+  try {
+    await delay(windowMs);
+  } catch {
+    return "?";
+  }
+
+  const second = cpuSnapshot(readCpuTimes);
+  if (!second || first.cores !== second.cores) return "?";
+
+  const busyDelta = second.busy - first.busy;
+  const totalDelta = second.total - first.total;
+  if (busyDelta < 0 || totalDelta <= 0 || busyDelta > totalDelta) return "?";
+
+  return ((busyDelta / totalDelta) * 100).toFixed(0);
 }
 
 function parseMemoryPercent(vmOutput: string): string {
@@ -81,7 +147,10 @@ function formatDiskFree(diskFreeGB: string): string {
     : `${gigabytes.toFixed(0)}GB`;
 }
 
-export async function getSystemStats(run: CommandRunner = runCommand): Promise<SystemStats> {
+export async function getSystemStats(
+  run: CommandRunner = runCommand,
+  readCpu: CpuPercentReader = readCpuPercent,
+): Promise<SystemStats> {
   const safeRun = async (command: string, args: readonly string[]): Promise<string> => {
     try {
       return await run(command, args, 2000);
@@ -90,14 +159,14 @@ export async function getSystemStats(run: CommandRunner = runCommand): Promise<S
     }
   };
 
-  const [topOutput, vmOutput, dfOutput] = await Promise.all([
-    safeRun("/usr/bin/top", ["-l", "1", "-n", "0"]),
+  const [cpuPercent, vmOutput, dfOutput] = await Promise.all([
+    readCpu(),
     safeRun("/usr/bin/vm_stat", []),
     safeRun("/bin/df", ["-h", "/System/Volumes/Data"]),
   ]);
 
   return {
-    cpuPercent: parseCpuPercent(topOutput),
+    cpuPercent,
     memPercent: parseMemoryPercent(vmOutput),
     diskFreeGB: parseDiskFreeGB(dfOutput),
   };

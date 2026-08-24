@@ -67,12 +67,13 @@ test("hard-kills a temperature command that exceeds its timeout", async () => {
   assert.ok(Date.now() - startedAt < 3000);
 });
 
-test("does not run inside spawned Pi agent processes", () => {
+test("does not run inside spawned Pi agent processes or Herdr", () => {
   assert.equal(shouldRunSystemMonitor({}), true);
   assert.equal(shouldRunSystemMonitor({ PI_AGENT_NAME: "writer" }), false);
   assert.equal(shouldRunSystemMonitor({ PI_TEAM_NAME: "team" }), false);
   assert.equal(shouldRunSystemMonitor({ PI_TEAM_ROLE: "reviewer" }), false);
   assert.equal(shouldRunSystemMonitor({ PI_LIFECYCLE_RUN_ID: "run-1" }), false);
+  assert.equal(shouldRunSystemMonitor({ HERDR_ENV: "1" }), false);
 });
 
 test("temperature status keeps the existing severity colors", () => {

@@ -1,6 +1,7 @@
 import { cpus } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
+  readISMCTemperature,
   runCommand,
   type TemperatureCommandRunner,
 } from "./temperature-monitor.ts";
@@ -28,6 +29,8 @@ export interface CpuTimes {
 export type CpuTimesReader = () => ReadonlyArray<{ readonly times: CpuTimes }>;
 export type CpuSampleDelay = (milliseconds: number) => Promise<unknown>;
 export type CpuPercentReader = () => Promise<string>;
+export type SystemStatsReader = () => Promise<SystemStats>;
+export type TemperatureReader = () => Promise<number | null>;
 
 const CPU_SAMPLE_WINDOW_MS = 200;
 
@@ -170,6 +173,17 @@ export async function getSystemStats(
     memPercent: parseMemoryPercent(vmOutput),
     diskFreeGB: parseDiskFreeGB(dfOutput),
   };
+}
+
+export async function getSystemMetrics(
+  readStats: SystemStatsReader = getSystemStats,
+  readTemperature: TemperatureReader = readISMCTemperature,
+): Promise<SystemMetrics> {
+  const [systemStats, tempC] = await Promise.all([
+    readStats(),
+    readTemperature(),
+  ]);
+  return { ...systemStats, tempC };
 }
 
 export function formatSystemStatus(metrics: SystemMetrics, theme?: unknown): string {

@@ -18,6 +18,41 @@ interface RuntimeDependencies {
   now: () => number;
 }
 
+export class ExtensionStatusFooterRuntime {
+  private currentContext: MonitorContext | null = null;
+  private readonly truncate: (text: string, width: number) => string;
+
+  constructor(truncate: (text: string, width: number) => string) {
+    this.truncate = truncate;
+  }
+
+  start(context: MonitorContext): void {
+    this.stop();
+    if (context.mode !== "tui") return;
+
+    this.currentContext = context;
+    context.ui.setStatus("system-monitor", undefined);
+    context.ui.setFooter((_tui: unknown, _theme: unknown, footerData: {
+      getExtensionStatuses(): ReadonlyMap<string, string>;
+    }) => ({
+      invalidate() {},
+      render: (width: number): string[] => {
+        const statuses = [...footerData.getExtensionStatuses()]
+          .filter(([key, value]) => key !== "system-monitor" && Boolean(value))
+          .map(([, value]) => value);
+        if (statuses.length === 0) return [];
+        return [this.truncate(statuses.join(" │ "), width), ""];
+      },
+    }));
+  }
+
+  stop(): void {
+    const context = this.currentContext;
+    this.currentContext = null;
+    if (context) context.ui.setFooter(undefined);
+  }
+}
+
 export class SystemMonitorRuntime {
   private refreshGeneration: number | null = null;
   private lifecycleGeneration = 0;
@@ -35,6 +70,7 @@ export class SystemMonitorRuntime {
 
     this.currentContext = context;
     this.lastRefreshStartedAt = Number.NEGATIVE_INFINITY;
+    context.ui.setStatus("system-monitor", "");
 
     context.ui.setFooter((_tui: unknown, _theme: unknown, footerData: {
       getExtensionStatuses(): ReadonlyMap<string, string>;

@@ -1,13 +1,14 @@
 {
   "name": "pi-system-monitor",
   "version": "0.1.2",
-  "description": "A lightweight macOS system metrics footer for Pi.",
+  "description": "A lightweight macOS system metrics footer for Pi and Herdr.",
   "type": "module",
   "keywords": [
     "pi-package"
   ],
   "files": [
     "README.md",
+    "herdr-status.ts",
     "index.ts",
     "monitor-runtime.ts",
     "system-stats.ts",

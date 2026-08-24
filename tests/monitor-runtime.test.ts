@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { SystemMonitorRuntime } from "../monitor-runtime.ts";
+import {
+  ExtensionStatusFooterRuntime,
+  SystemMonitorRuntime,
+} from "../monitor-runtime.ts";
 import type { SystemMetrics } from "../system-stats.ts";
 
 function flush(): Promise<void> {
@@ -84,6 +87,7 @@ test("TUI startup reads once, refreshes only after cooldown, and cleans up idemp
   const { context, state } = createContext("tui");
 
   runtime.start(context);
+  assert.deepEqual(state.statuses, [{ key: "system-monitor", value: "" }]);
   await flush();
 
   assert.equal(state.footerFactories, 1);
@@ -92,10 +96,13 @@ test("TUI startup reads once, refreshes only after cooldown, and cleans up idemp
     "",
   ]);
   assert.equal(monitorState.reads, 1);
-  assert.deepEqual(state.statuses, [{
-    key: "system-monitor",
-    value: "CPU 20% │ MEM 40% │ DSK 1.43TB │ 42°C",
-  }]);
+  assert.deepEqual(state.statuses, [
+    { key: "system-monitor", value: "" },
+    {
+      key: "system-monitor",
+      value: "CPU 20% │ MEM 40% │ DSK 1.43TB │ 42°C",
+    },
+  ]);
 
   monitorState.now = 29_999;
   runtime.refresh();
@@ -118,7 +125,23 @@ test("TUI startup reads once, refreshes only after cooldown, and cleans up idemp
 
   runtime.stop();
   assert.equal(state.footerClears, 1);
-  assert.equal(state.statuses.length, 3);
+  assert.equal(state.statuses.length, 4);
+});
+
+test("Herdr footer hides local metrics but keeps other extension statuses", () => {
+  const runtime = new ExtensionStatusFooterRuntime((text, width) => text.slice(0, width));
+  const { context, state } = createContext("tui");
+
+  runtime.start(context);
+
+  assert.deepEqual(state.statuses, [
+    { key: "system-monitor", value: undefined },
+  ]);
+  assert.equal(state.footerFactories, 1);
+  assert.deepEqual(state.renderFooter?.(100), ["git:main", ""]);
+
+  runtime.stop();
+  assert.equal(state.footerClears, 1);
 });
 
 test("non-TUI startup never reads metrics or touches the footer", async () => {
@@ -153,14 +176,19 @@ test("restarting ignores metrics from the previous lifecycle", async () => {
 
   resolvers[0]!(initialMetrics);
   await flush();
-  assert.deepEqual(second.state.statuses, []);
+  assert.deepEqual(second.state.statuses, [
+    { key: "system-monitor", value: "" },
+  ]);
 
   resolvers[1]!(initialMetrics);
   await flush();
-  assert.deepEqual(second.state.statuses, [{
-    key: "system-monitor",
-    value: "CPU 20% │ MEM 40% │ DSK 1.43TB │ 42°C",
-  }]);
+  assert.deepEqual(second.state.statuses, [
+    { key: "system-monitor", value: "" },
+    {
+      key: "system-monitor",
+      value: "CPU 20% │ MEM 40% │ DSK 1.43TB │ 42°C",
+    },
+  ]);
 
   runtime.stop();
 });
@@ -183,5 +211,8 @@ test("metrics received after shutdown do not update stale UI", async () => {
   resolveMetrics(initialMetrics);
   await flush();
 
-  assert.deepEqual(state.statuses, [{ key: "system-monitor", value: undefined }]);
+  assert.deepEqual(state.statuses, [
+    { key: "system-monitor", value: "" },
+    { key: "system-monitor", value: undefined },
+  ]);
 });

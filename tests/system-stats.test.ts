@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   formatSystemStatus,
+  getSystemMetrics,
   getSystemStats,
   readCpuPercent,
   type CommandRunner,
@@ -37,6 +38,18 @@ test("collects CPU, memory, and disk stats without a temperature subprocess", as
     { command: "/usr/bin/vm_stat", args: [], timeoutMs: 2000 },
     { command: "/bin/df", args: ["-h", "/System/Volumes/Data"], timeoutMs: 2000 },
   ]);
+});
+
+test("collects one combined metrics snapshot for Pi and Herdr", async () => {
+  assert.deepEqual(await getSystemMetrics(
+    async () => ({ cpuPercent: "20", memPercent: "40", diskFreeGB: "1434" }),
+    async () => 42,
+  ), {
+    cpuPercent: "20",
+    memPercent: "40",
+    diskFreeGB: "1434",
+    tempC: 42,
+  });
 });
 
 test("derives CPU percent from a bounded two-sample window", async () => {

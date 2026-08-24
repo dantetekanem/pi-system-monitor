@@ -41,15 +41,27 @@ function isTemperatureTheme(theme: unknown): theme is TemperatureTheme {
   return isRecord(theme) && typeof theme.fg === "function";
 }
 
-export function shouldRunSystemMonitor(
+export function isSpawnedSystemMonitorProcess(
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ): boolean {
-  return !(
+  return Boolean(
     environment.PI_AGENT_NAME
     || environment.PI_TEAM_NAME
     || environment.PI_TEAM_ROLE
     || environment.PI_LIFECYCLE_RUN_ID
   );
+}
+
+export function isHerdrEnvironment(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  return environment.HERDR_ENV === "1";
+}
+
+export function shouldRunSystemMonitor(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  return !isSpawnedSystemMonitorProcess(environment) && !isHerdrEnvironment(environment);
 }
 
 export function formatTemperatureStatus(temperatureC: number, theme?: unknown): string {

@@ -189,7 +189,7 @@ export async function getSystemMetrics(
 export function formatSystemStatus(metrics: SystemMetrics, theme?: unknown): string {
   const cpu = Number.parseInt(metrics.cpuPercent, 10) || 0;
   const memory = Number.parseInt(metrics.memPercent, 10) || 0;
-  const disk = Number.parseInt(metrics.diskFreeGB, 10) || 0;
+  const disk = Number.parseInt(metrics.diskFreeGB, 10);
   const parts = [
     colorMetric(
       theme,

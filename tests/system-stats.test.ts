@@ -91,6 +91,28 @@ test("degrades safely when CPU samples are unavailable or invalid", async () => 
   assert.equal(await readCpuPercent(() => coreCountChange.shift()!, noDelay), "?");
 });
 
+test("distinguishes unavailable disk readings from measured low space", async () => {
+  const stats = await getSystemStats(async () => "", async () => "20");
+  const theme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>` };
+  const cases = [
+    [stats.diskFreeGB, "success", "DSK ?GB"],
+    ["0", "error", "!! DSK 0GB"],
+    ["19", "error", "!! DSK 19GB"],
+    ["20", "warning", "! DSK 20GB"],
+    ["49", "warning", "! DSK 49GB"],
+    ["50", "success", "DSK 50GB"],
+  ] as const;
+
+  for (const [diskFreeGB, severity, expected] of cases) {
+    const metrics = { ...stats, diskFreeGB, tempC: null };
+    assert.equal(formatSystemStatus(metrics).split(" │ ")[2], expected);
+    assert.equal(
+      formatSystemStatus(metrics, theme).split(" │ ")[2],
+      `<${severity}>${expected}</${severity}>`,
+    );
+  }
+});
+
 test("formats CPU, memory, disk, and temperature together", () => {
   const theme = {
     fg(color: string, text: string) {
